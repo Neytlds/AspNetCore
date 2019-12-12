@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Threading;
@@ -23,7 +22,7 @@ using DevHostServerProgram = Microsoft.AspNetCore.Blazor.DevServer.Server.Progra
 
 namespace Wasm.Perforrmance.Driver
 {
-    public class Program
+    public partial class Program
     {
         // Run Selenium using a headless browser?
         static readonly bool RunHeadlessBrowser
@@ -34,8 +33,11 @@ namespace Wasm.Perforrmance.Driver
 
         public static async Task Main()
         {
-            using var seleniumServer = await SeleniumServer.StartAsync();
-            using var browser = CreateBrowser(seleniumServer.Uri);
+            var port = 4444;
+            SeleniumServer.Start();
+            var seleniumUri = await SeleniumServer.WaitForLaunchAsync(port);
+
+            using var browser = CreateBrowser(seleniumUri);
             using var testApp = RunTestApp();
 
             var address = testApp.Services.GetRequiredService<IServer>()
@@ -48,7 +50,34 @@ namespace Wasm.Perforrmance.Driver
             browser.Navigate();
 
             var results = await RunBenchmark(browser);
-            Console.WriteLine(JsonSerializer.Serialize(results));
+            FormatAsBenchmarksOutput(results);
+        }
+
+        private static void FormatAsBenchmarksOutput(List<BenchmarkResult> results)
+        {
+            // Sample of the the format: https://github.com/aspnet/Benchmarks/blob/e55f9e0312a7dd019d1268c1a547d1863f0c7237/src/Benchmarks/Program.cs#L51-L67
+            var output = new BenchmarkOutput();
+            foreach (var result in results)
+            {
+                output.Metadata.Add(new BenchmarkMetadata
+                {
+                    Source = "BlazorWasm",
+                    Name = result.Name,
+                    ShortDescription = $"{result.Name} Duration",
+                    LongDescription = $"{result.Name} Duration",
+                });
+
+                output.Measurements.Add(new BenchmarkMeasurement
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Name = result.Name,
+                    Value = result.Duration,
+                });
+            }
+
+            Console.WriteLine("#StartJobStatistics");
+            Console.WriteLine(JsonSerializer.Serialize(output));
+            Console.WriteLine("#EndJobStatistics");
         }
 
         private static Task<List<BenchmarkResult>> RunBenchmark(RemoteWebDriver browser)
@@ -103,14 +132,9 @@ namespace Wasm.Perforrmance.Driver
 
         static IHost RunTestApp()
         {
-            var testAppRoot = typeof(Program).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
-                .First(f => f.Key == "TestAppLocation")
-                .Value;
-
             var args = new[]
             {
                 "--urls", "http://127.0.0.1:0",
-                "--contentroot", testAppRoot,
                 "--applicationpath", typeof(TestApp.Startup).Assembly.Location,
             };
 
@@ -153,14 +177,13 @@ namespace Wasm.Perforrmance.Driver
         {
             var options = new ChromeOptions();
 
-
             if (RunHeadlessBrowser)
             {
                 options.AddArgument("--headless");
             }
 
-            // Log errors
             options.SetLoggingPreference(LogType.Browser, LogLevel.All);
+
 
             var attempt = 0;
             const int MaxAttempts = 3;
